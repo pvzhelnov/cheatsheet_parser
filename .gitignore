@@ -217,3 +217,5 @@ untracked
 logs/
 responses/
 !/examples/*/responses/
+media/
+prompts/
