@@ -1,0 +1,9 @@
+name: cheatsheet_parser
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.12.9
+  - pip=25.1
+  - pip:
+    - poetry==2.1.3
