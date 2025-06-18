@@ -1,0 +1,352 @@
+provider:
+  provider_name: gemini
+  safety_settings: '[SafetySetting(method=None, category=<HarmCategory.HARM_CATEGORY_HATE_SPEECH:
+    ''HARM_CATEGORY_HATE_SPEECH''>, threshold=<HarmBlockThreshold.BLOCK_NONE: ''BLOCK_NONE''>),
+    SafetySetting(method=None, category=<HarmCategory.HARM_CATEGORY_HARASSMENT: ''HARM_CATEGORY_HARASSMENT''>,
+    threshold=<HarmBlockThreshold.BLOCK_NONE: ''BLOCK_NONE''>), SafetySetting(method=None,
+    category=<HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: ''HARM_CATEGORY_SEXUALLY_EXPLICIT''>,
+    threshold=<HarmBlockThreshold.BLOCK_NONE: ''BLOCK_NONE''>), SafetySetting(method=None,
+    category=<HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: ''HARM_CATEGORY_DANGEROUS_CONTENT''>,
+    threshold=<HarmBlockThreshold.BLOCK_NONE: ''BLOCK_NONE''>), SafetySetting(method=None,
+    category=<HarmCategory.HARM_CATEGORY_CIVIC_INTEGRITY: ''HARM_CATEGORY_CIVIC_INTEGRITY''>,
+    threshold=<HarmBlockThreshold.BLOCK_NONE: ''BLOCK_NONE''>)]'
+model:
+  model_name: gemini-2.5-flash-preview-05-20
+  config:
+    temperature: 0.0
+    top_k: 40
+    top_p: 0.95
+    seed: 42
+request:
+  prompt_hash: b9af85e7
+  prompt_file: prompts/b9af85e7.txt
+  system_instruction_hash: '64362907'
+  system_instruction_file: prompts/64362907.txt
+  response_schema:
+    $defs:
+      CheatsheetQuestion:
+        properties:
+          question_uid:
+            $ref: '#/$defs/CheatsheetQuestionUID'
+          question_formulation:
+            title: Question Formulation
+            type: string
+          responses:
+            items:
+              $ref: '#/$defs/ResponseOption'
+            title: Responses
+            type: array
+          question_note:
+            anyOf:
+            - type: string
+            - type: 'null'
+            description: Any question-wide note(s), if present.
+            title: Question Note
+        required:
+        - question_uid
+        - question_formulation
+        - responses
+        - question_note
+        title: CheatsheetQuestion
+        type: object
+      CheatsheetQuestionUID:
+        properties:
+          unique_question_id:
+            title: Unique Question Id
+            type: integer
+        required:
+        - unique_question_id
+        title: CheatsheetQuestionUID
+        type: object
+      FinalDecision:
+        properties:
+          decision:
+            enum:
+            - Exclude
+            - Include
+            title: Decision
+            type: string
+        required:
+        - decision
+        title: FinalDecision
+        type: object
+      FlowDiagramStep:
+        properties:
+          step_id:
+            title: Step Id
+            type: integer
+          is_last_step:
+            title: Is Last Step
+            type: boolean
+          on_response_option:
+            items:
+              $ref: '#/$defs/OnResponseOption'
+            title: On Response Option
+            type: array
+        required:
+        - step_id
+        - is_last_step
+        - on_response_option
+        title: FlowDiagramStep
+        type: object
+      OnResponseOption:
+        properties:
+          response_option_unique_literal:
+            $ref: '#/$defs/ResponseOptionUniqueLiteral'
+          action_to_take:
+            anyOf:
+            - $ref: '#/$defs/CheatsheetQuestionUID'
+            - $ref: '#/$defs/FinalDecision'
+            title: Action To Take
+        required:
+        - response_option_unique_literal
+        - action_to_take
+        title: OnResponseOption
+        type: object
+      ResponseOption:
+        properties:
+          value:
+            $ref: '#/$defs/ResponseOptionUniqueLiteral'
+          notes:
+            description: if the study...
+            items:
+              type: string
+            title: Notes
+            type: array
+        required:
+        - value
+        - notes
+        title: ResponseOption
+        type: object
+      ResponseOptionUniqueLiteral:
+        properties:
+          string_value:
+            description: Capture the literal value verbatim as described in the input
+              file(s).
+            title: String Value
+            type: string
+          unique_literal:
+            description: May occasionally include other literal value types depending
+              on context. Select the closest one in case of obvious variants, or select
+              Other if no matching literal value is found.
+            enum:
+            - 'Yes'
+            - 'No'
+            - Maybe
+            - Other
+            title: Unique Literal
+            type: string
+        required:
+        - string_value
+        - unique_literal
+        title: ResponseOptionUniqueLiteral
+        type: object
+    properties:
+      allowed_response_options:
+        description: Deduce these from the entire preceding context. Consider obviously
+          equivalent response options like case differences or typos to be equivalent
+          and select the most consistent variant.
+        items:
+          $ref: '#/$defs/ResponseOptionUniqueLiteral'
+        title: Allowed Response Options
+        type: array
+      questions:
+        items:
+          $ref: '#/$defs/CheatsheetQuestion'
+        title: Questions
+        type: array
+      flow_diagram_detected:
+        description: Is there a flow diagram in the input file(s)?
+        title: Flow Diagram Detected
+        type: boolean
+      flow_diagram:
+        description: 'If flow_diagram_detected, extract it. Otherwise implement the
+          following pseudocode: { While is_last_step is False: { If Maybe/Yes Then
+          Proceed to next step_id, Else Exclude } ; Once is_last_step is True: { If
+          Maybe/Yes Then Include, Else Exclude } }'
+        items:
+          $ref: '#/$defs/FlowDiagramStep'
+        title: Flow Diagram
+        type: array
+    required:
+    - allowed_response_options
+    - questions
+    - flow_diagram_detected
+    - flow_diagram
+    title: ScreeningCheatsheet
+    type: object
+response:
+  content:
+    allowed_response_options:
+    - string_value: 'YES'
+      unique_literal: 'Yes'
+    - string_value: 'NO'
+      unique_literal: 'No'
+    - string_value: UNCLEAR
+      unique_literal: Maybe
+    - string_value: Conference Abstract
+      unique_literal: Other
+    - string_value: Non-English Article
+      unique_literal: Other
+    - string_value: Protocol
+      unique_literal: Other
+    - string_value: Systematic Review
+      unique_literal: Other
+    - string_value: Unclear
+      unique_literal: Maybe
+    questions:
+    - question_uid:
+        unique_question_id: 1
+      question_formulation: Does the study involve an intervention to promote gender
+        equity among adults in any employment sector targeted to individuals, organizations,
+        or systems?
+      responses:
+      - value:
+          string_value: 'YES'
+          unique_literal: 'Yes'
+        notes:
+        - The intervention clearly targets at least one of the 3 pillars¹ detailed
+          below.
+        - The intervention is targeted towards adults in any employment sector including
+          academia, industry, law, government, education, business, and STEM
+      - value:
+          string_value: 'NO'
+          unique_literal: 'No'
+        notes:
+        - There is no discernible intervention for gender equity present
+      - value:
+          string_value: UNCLEAR
+          unique_literal: Maybe
+        notes:
+        - There is a lack of clarity about whether the intervention is to promote
+          gender equity
+      question_note: null
+    - question_uid:
+        unique_question_id: 2
+      question_formulation: Is the study a relevant study design?
+      responses:
+      - value:
+          string_value: 'YES'
+          unique_literal: 'Yes'
+        notes:
+        - Randomized controlled trials
+        - Quasi randomized
+      - value:
+          string_value: 'NO'
+          unique_literal: 'No'
+        notes:
+        - All other study designs
+      - value:
+          string_value: UNCLEAR
+          unique_literal: Maybe
+        notes:
+        - Study design is not clearly reported
+        - OR
+        - If it is unclear whether adequate randomization took place
+      question_note: null
+    - question_uid:
+        unique_question_id: 3
+      question_formulation: Is this a potentially relevant study with the following
+        formats? [Flagging Question]
+      responses:
+      - value:
+          string_value: Conference Abstract
+          unique_literal: Other
+        notes: []
+      - value:
+          string_value: Non-English Article
+          unique_literal: Other
+        notes: []
+      - value:
+          string_value: Protocol
+          unique_literal: Other
+        notes: []
+      - value:
+          string_value: Systematic Review
+          unique_literal: Other
+        notes: []
+      - value:
+          string_value: Unclear
+          unique_literal: Maybe
+        notes: []
+      question_note: This is a flagging question for organizational purposes. It is
+        only necessary to answer this question if the study is believed to fall into
+        one of the above categories, otherwise please leave blank.
+    flow_diagram_detected: true
+    flow_diagram:
+    - step_id: 1
+      is_last_step: false
+      on_response_option:
+      - response_option_unique_literal:
+          string_value: 'Yes'
+          unique_literal: 'Yes'
+        action_to_take:
+          unique_question_id: 2
+      - response_option_unique_literal:
+          string_value: Maybe/Unclear
+          unique_literal: Maybe
+        action_to_take:
+          unique_question_id: 2
+      - response_option_unique_literal:
+          string_value: 'No'
+          unique_literal: 'No'
+        action_to_take:
+          decision: Exclude
+    - step_id: 2
+      is_last_step: false
+      on_response_option:
+      - response_option_unique_literal:
+          string_value: 'Yes'
+          unique_literal: 'Yes'
+        action_to_take:
+          unique_question_id: 3
+      - response_option_unique_literal:
+          string_value: Maybe/Unclear
+          unique_literal: Maybe
+        action_to_take:
+          unique_question_id: 3
+      - response_option_unique_literal:
+          string_value: 'No'
+          unique_literal: 'No'
+        action_to_take:
+          decision: Exclude
+    - step_id: 3
+      is_last_step: true
+      on_response_option:
+      - response_option_unique_literal:
+          string_value: Conference Abstract
+          unique_literal: Other
+        action_to_take:
+          decision: Include
+      - response_option_unique_literal:
+          string_value: Non-English Article
+          unique_literal: Other
+        action_to_take:
+          decision: Include
+      - response_option_unique_literal:
+          string_value: Protocol
+          unique_literal: Other
+        action_to_take:
+          decision: Include
+      - response_option_unique_literal:
+          string_value: Systematic Review
+          unique_literal: Other
+        action_to_take:
+          decision: Include
+      - response_option_unique_literal:
+          string_value: Maybe/Unclear/No
+          unique_literal: Other
+        action_to_take:
+          decision: Exclude
+  token_usage:
+    prompt_tokens: 2082
+    completion_tokens: 1950
+    total_tokens: 7970
+  metadata:
+    request_timestamp: '2025-06-17T22:54:59.796675'
+    response_timestamp: '2025-06-17T22:55:25.326494'
+    finish_reason: completed
+evals: {}
+manual_evals: {}
+ground_truth: null
+name: null
