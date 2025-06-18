@@ -16,6 +16,8 @@ from pydantic import BaseModel
 import requests
 from google import genai
 import ollama
+import base64
+import pymupdf
 from openai import OpenAI
 
 from google.genai import types
@@ -243,11 +245,10 @@ class GeminiProvider(BaseLLMProvider):
             return self.client.files.upload(file=path_or_url.strip())
 
 
-class OpenRouterProvider(BaseLLMProvider, metaclass=NotReadyMeta):
+class OpenRouterProvider(BaseLLMProvider):
     """OpenRouter provider"""
     
-    def __init__(self, model: str = "anthropic/claude-3.5-sonnet", **kwargs):
-        super().__init__(model, **kwargs)
+    def __init__(self, **kwargs):
         api_key = os.getenv("OPENROUTER_API_KEY")
         if not api_key:
             raise ValueError("OPENROUTER_API_KEY environment variable is required")
@@ -255,76 +256,284 @@ class OpenRouterProvider(BaseLLMProvider, metaclass=NotReadyMeta):
             base_url="https://openrouter.ai/api/v1",
             api_key=api_key,
         )
+        kwargs.setdefault('model', BaseLLM)
+        super().__init__(**kwargs)
+
+    def unsafe_settings(self):
+        """Return provider-specific full uncensored safety settings"""
+        return {}  # OpenRouter doesn't have safety settings like Gemini
         
-    def generate(self, prompt: str, response_schema: Optional[Type[BaseModel]] = None) -> LLMResponse:
+    def generate(self, prompt: BasePrompt) -> LLMResponse:
         try:
-            messages = [{"role": "user", "content": prompt}]
+            message_content = []
+
+            # Add text prompts first (recommended by OpenRouter)
+            text_parts = []
+            file_parts = []
+
+            for item in prompt.parts():
+                if self._is_valid_path_or_url(item):
+                    file_parts.append(item)
+                else:
+                    text_parts.append(item)
+
+            # Add text content first
+            for text in text_parts:
+                message_content.append({"type": "text", "text": text})
+
+            # Then add file content
+            for file_path in file_parts:
+                file_content = self._process_file(file_path)
+                message_content.append(file_content)
+
+            messages = [{"role": "user", "content": message_content}]
             
+            # Add schema instruction if response_schema is specified
+            response_schema = self.model.response_schema
             if response_schema:
-                # Add JSON schema instruction
-                schema_instruction = f"\nRespond with valid JSON matching this schema: {response_schema.model_json_schema()}"
-                messages[0]["content"] = prompt + schema_instruction
+                schema_instruction = f"Respond with valid JSON matching this schema: {response_schema.model_json_schema()}"
+                messages.append({"role": "system", "content": schema_instruction})
                 
+            request_timestamp = datetime.now()
             response = self.client.chat.completions.create(
-                model=self.model,
-                messages=messages
+                model=self.model.model_name,
+                messages=messages,
+                temperature=self.model.temperature,
+                seed=self.model.seed,
+                response_format={
+                    "type": "json_schema",
+                    "json_schema": response_schema.model_json_schema()
+                }
             )
-            
+            print(messages)
             return LLMResponse(
                 content=response.choices[0].message.content,
-                model=self.model,
-                provider="openrouter",
-                timestamp=datetime.now(),
                 token_usage={
                     "prompt_tokens": response.usage.prompt_tokens,
                     "completion_tokens": response.usage.completion_tokens,
                     "total_tokens": response.usage.total_tokens
                 } if response.usage else None,
-                metadata={"finish_reason": response.choices[0].finish_reason}
+                metadata={
+                    "request_timestamp": request_timestamp.isoformat(),
+                    "response_timestamp": datetime.now().isoformat(),
+                    "finish_reason": response.choices[0].finish_reason
+                }
             )
         except Exception as e:
             raise RuntimeError(f"OpenRouter API error: {str(e)}")
+        
+    def _is_valid_path_or_url(self, prompt_part: str) -> bool:
+        """Check if prompt is a valid local path or accessible URL"""
+        # Check if it's a local file path
+        if Path(prompt_part.strip()).exists():
+            return True
+        
+        # Check if it's a URL
+        if prompt_part.strip().startswith(('http://', 'https://')):
+            try:
+                response = requests.head(prompt_part.strip(), timeout=5)
+                return response.status_code == 200
+            except:
+                return False
+        
+        return False
+
+    def _process_file(self, path_or_url: str) -> dict:
+        """Process file for OpenRouter - convert to file content type"""
+        if path_or_url.startswith(('http://', 'https://')):
+            # For URLs, download first
+            response = requests.get(path_or_url)
+            temp_file = f"/tmp/{Path(path_or_url).name}"
+            with open(temp_file, 'wb') as f:
+                f.write(response.content)
+            file_path = temp_file
+        else:
+            file_path = path_or_url.strip()
+        
+        try:
+            # Read file as base64
+            with open(file_path, 'rb') as f:
+                file_data = base64.b64encode(f.read()).decode('utf-8')
+            
+            # Get filename and MIME type
+            filename = Path(file_path).name
+            file_extension = Path(file_path).suffix.lower()
+            
+            if file_extension == '.pdf':
+                mime_type = "application/pdf"
+                content_part = {
+                    "type": "file",
+                    "file": {
+                        "filename": filename,
+                        "file_data": f"data:{mime_type};base64,{file_data}"
+                    }
+                }
+            elif file_extension in ['.jpg', '.jpeg', '.png', '.gif', '.bmp']:
+                # For images, use image_url type
+                if file_extension in ['.jpg', '.jpeg']:
+                    mime_type = "image/jpeg"
+                elif file_extension == '.png':
+                    mime_type = "image/png"
+                elif file_extension == '.gif':
+                    mime_type = "image/gif"
+                else:
+                    mime_type = "image/png"
+                
+                content_part = {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:{mime_type};base64,{file_data}"
+                    }
+                }
+            else:
+                # For other file types, use file type
+                content_part = {
+                    "type": "file",
+                    "file": {
+                        "filename": filename,
+                        "file_data": f"data:application/octet-stream;base64,{file_data}"
+                    }
+                }
+            
+        except Exception as e:
+            # Fallback: return error as text
+            content_part = {"type": "text", "text": f"Error processing file {file_path}: {str(e)}"}
+            
+        # Clean up temp file if it was downloaded
+        if path_or_url.startswith(('http://', 'https://')):
+            os.remove(temp_file)
+        
+        return content_part
 
 
-class OllamaProvider(BaseLLMProvider, metaclass=NotReadyMeta):
+class OllamaProvider(BaseLLMProvider):
     """Ollama local provider"""
     
-    def __init__(self, model: str = "llama3.1", host: str = "http://localhost:11434", **kwargs):
-        super().__init__(model, **kwargs)
-        self.host = host
+    def __init__(self, **kwargs):
+        host = os.getenv("OLLAMA_HOST")
+        if not host:
+            raise ValueError("OLLAMA_HOST environment variable is required")
+        ollama.Client(host=host)
+        kwargs.setdefault('model', BaseLLM)
+        super().__init__(**kwargs)
+
+    def unsafe_settings(self):
+        """Return provider-specific full uncensored safety settings"""
+        return {}  # Ollama doesn't have safety settings like Gemini
         
-    def generate(self, prompt: str, response_schema: Optional[Type[BaseModel]] = None) -> LLMResponse:
+    def generate(self, prompt: BasePrompt) -> LLMResponse:
         try:
+            full_prompt = ""
+            
+            all_images = []
+            text_parts = []
+
+            # Process each item in the prompt
+            for item in prompt.parts():
+                if self._is_valid_path_or_url(item):
+                    processed_images = self._process_file(item)
+                    all_images.extend(processed_images)
+                else:
+                    text_parts.append(item)
+
+            full_prompt = "\n".join(text_parts)
+            
+            # Add schema instruction if response_schema is specified
+            response_schema = self.model.response_schema
             if response_schema:
-                # Add JSON schema instruction
-                schema_instruction = f"\nRespond with valid JSON matching this schema: {response_schema.model_json_schema()}"
-                prompt = prompt + schema_instruction
+                schema_instruction = f"Respond with valid JSON matching this schema: {response_schema.model_json_schema()}"
+                full_prompt += schema_instruction
                 
+            request_timestamp = datetime.now()
             response = ollama.generate(
-                model=self.model,
-                prompt=prompt,
-                host=self.host
+                model=self.model.model_name,
+                prompt=full_prompt.strip(),
+                images=all_images if all_images else None,
+                format='json' if response_schema else None,
+                options={
+                    'temperature': self.model.temperature,
+                    'top_k': self.model.top_k,
+                    'top_p': self.model.top_p,
+                    'seed': self.model.seed
+                }
             )
             
             return LLMResponse(
-                content=response['response'],
-                model=self.model,
-                provider="ollama",
-                timestamp=datetime.now(),
+                content=response_schema.model_validate_json(response['response']),
                 token_usage={
                     "prompt_tokens": response.get('prompt_eval_count', 0),
                     "completion_tokens": response.get('eval_count', 0),
                     "total_tokens": response.get('prompt_eval_count', 0) + response.get('eval_count', 0)
                 },
                 metadata={
+                    "request_timestamp": request_timestamp.isoformat(),
+                    "response_timestamp": datetime.now().isoformat(),
                     "total_duration": response.get('total_duration'),
                     "load_duration": response.get('load_duration'),
                     "prompt_eval_duration": response.get('prompt_eval_duration'),
-                    "eval_duration": response.get('eval_duration')
+                    "eval_duration": response.get('eval_duration'),
+                    "finish_reason": "completed"
                 }
             )
         except Exception as e:
             raise RuntimeError(f"Ollama API error: {str(e)}")
+        
+    def _is_valid_path_or_url(self, prompt_part: str) -> bool:
+        """Check if prompt is a valid local path or accessible URL"""
+        # Check if it's a local file path
+        if Path(prompt_part.strip()).exists():
+            return True
+        
+        # Check if it's a URL
+        if prompt_part.strip().startswith(('http://', 'https://')):
+            try:
+                response = requests.head(prompt_part.strip(), timeout=5)
+                return response.status_code == 200
+            except:
+                return False
+        
+        return False
+
+    def _process_file(self, path_or_url: str) -> dict:
+        """Process file for Ollama - convert PDF pages to images"""
+        if path_or_url.startswith(('http://', 'https://')):
+            # For URLs, download first
+            response = requests.get(path_or_url)
+            temp_file = f"/tmp/{Path(path_or_url).name}"
+            with open(temp_file, 'wb') as f:
+                f.write(response.content)
+            file_path = temp_file
+        else:
+            file_path = path_or_url.strip()
+        
+        file_extension = Path(file_path).suffix.lower()
+        images = []
+        
+        try:
+            if file_extension == '.pdf':
+                # Convert PDF pages to images
+                doc = pymupdf.open(file_path)
+                for page_num in range(len(doc)):
+                    page = doc.load_page(page_num)
+                    pix = page.get_pixmap(matrix=pymupdf.Matrix(2, 2))  # 2x zoom for better quality
+                    img_data = pix.tobytes("png")
+                    img_base64 = base64.b64encode(img_data).decode('utf-8')
+                    images.append(img_base64)
+                doc.close()
+            elif file_extension in ['.jpg', '.jpeg', '.png', '.gif', '.bmp']:
+                # For regular images
+                with open(file_path, 'rb') as f:
+                    file_data = base64.b64encode(f.read()).decode('utf-8')
+                images.append(file_data)
+        except Exception as e:
+            # Fallback: return error as text
+            images = []
+            
+        # Clean up temp file if it was downloaded
+        if path_or_url.startswith(('http://', 'https://')):
+            os.remove(temp_file)
+        
+        return images
 
 
 class LLMAgent:
