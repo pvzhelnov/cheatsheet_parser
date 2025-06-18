@@ -218,4 +218,5 @@ logs/
 responses/
 !/examples/*/responses/
 media/
+!/examples/*/media/
 prompts/
